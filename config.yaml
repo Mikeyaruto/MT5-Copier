@@ -1,0 +1,20 @@
+bridge:
+  poll_interval_seconds: 1
+  log_path: bridge/logs/bridge.log
+  state_db_path: bridge/state/bridge.db
+  feed:
+    type: jsonl_file_feed
+    jsonl_path: bridge/events.jsonl
+  dispatcher:
+    queue_base_path: "C:/MT5/Terminal/MQL5/Files/ea_queue"
+    inbox_subdir: inbox
+    processed_subdir: processed
+    failed_subdir: failed
+    max_write_retries: 3
+    retry_backoff_seconds: 1
+trading:
+  symbol_map:
+    XAUUSD: XAUUSD
+    EURUSD: EURUSD
+  default_lot_mode: "1:1"
+  max_slippage: 20
