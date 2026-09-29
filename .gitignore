@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+bridge/events.jsonl
+bridge/events.offset
+bridge/logs/
+bridge/state/
+*.tmp

@@ -20,6 +20,7 @@ python -m pip install pyyaml
 2. Go to **File → Open Data Folder**.
 3. Copy `TradeExecutorEA.mq5` into `MQL5/Experts/`.
 4. Restart MT5 or refresh the Navigator.
+5. In MetaEditor, compile the EA and check that the build reports zero errors before attaching it.
 
 ## 4) Enable Algo Trading and file access
 1. In MT5, click **Tools → Options → Expert Advisors**.
@@ -37,13 +38,16 @@ The EA reads from `MQL5/Files/ea_queue/inbox` by default.
 3. Update `config.yaml` to point `queue_base_path` to the same `MQL5/Files/ea_queue` folder.
    Example:
    ```yaml
-   dispatcher:
-     queue_base_path: "C:/Users/<YOU>/AppData/Roaming/MetaQuotes/Terminal/<HASH>/MQL5/Files/ea_queue"
+   bridge:
+     dispatcher:
+       queue_base_path: "C:/Users/<YOU>/AppData/Roaming/MetaQuotes/Terminal/<HASH>/MQL5/Files/ea_queue"
    ```
+4. The PU Prime reader writes `C:/bridge/events.jsonl` by default. Check `bridge.feed.jsonl_path` in `config.yaml` matches that file.
 
 ## 6) Attach EA to a chart
 1. In MT5 Navigator, drag **TradeExecutorEA** onto any chart.
 2. Ensure AutoTrading is enabled (green play button on the toolbar).
+3. Confirm you are on a hedging **demo** account; set `EnableExecution=true` in EA inputs only after checking `MaxLots` and the mapped broker symbols.
 
 ## 7) Run the bridge as a background task
 ### Option A: Manual start
@@ -64,10 +68,12 @@ python run_bridge.py
 ```
 python bridge/simulator.py
 ```
-You should see:
+This simulator sends real commands to the attached MT5 terminal. On a demo account, you should see:
 - A trade open in MT5
 - A trade close a few seconds later
 
 Logs:
 - Bridge: `bridge/logs/bridge.log`
 - EA: `MQL5/Files/logs/TradeExecutorEA.log`
+
+The source reader initially snapshots open PU Prime positions without copying them. Open and close a **new** small demo position to validate the combined flow. A malformed event or failed EA command stops execution and leaves the command in `failed`; inspect both logs, the failed JSON file, and the MT5 positions before restarting or manually retrying anything. Do not delete the source state, event file, cursor, or mapping to clear an error without reconciling existing positions first.

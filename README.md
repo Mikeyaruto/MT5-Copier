@@ -7,7 +7,7 @@ A lightweight, self-hosted trade signal bridge for MetaTrader 5. Connects any ex
 ## How It Works
 
 ```
-Signal Source (JSONL / Web Platform / Custom Feed)
+Signal Source (JSONL / PU Prime emulator bridge / Custom Feed)
         ↓
   Python Bridge (run_bridge.py)
         ↓
@@ -31,7 +31,7 @@ The Python bridge reads trade events from a feed, maps symbols, deduplicates eve
 - **Symbol mapping** — remap symbol names between your signal source and your broker
 - **CSV trade mapping** — persists source_id → MT5 ticket mapping across EA restarts
 - **Pluggable feed system** — swap in any signal source by implementing the `TradeFeed` interface
-- **Built-in simulator** — test your full pipeline locally without live trades
+- **Built-in simulator** — emits executable commands; use a demo account
 - **Structured logging** — separate logs for the bridge and the EA
 
 ---
@@ -105,11 +105,13 @@ python run_bridge.py
 python bridge/simulator.py
 ```
 
-You should see a trade open and close in MT5 within a few seconds.
+On a configured MT5 demo account, the simulator emits a trade open and close. It is not a dry run.
 
 ---
 
 ## Feed Format (JSONL)
+
+The companion [PU Prime emulator reader](https://github.com/Mikeyaruto/MT5-Copier-bridge) produces `C:/bridge/events.jsonl`. Set the same `jsonl_path` in `config.yaml` and start both Python processes on the Windows VPS. The feed cursor is saved only after a command enters MT5's local queue. Configure the EA on a demo account and explicitly enable execution. See [setup.md](setup.md).
 
 Each line in your feed file is a JSON event:
 

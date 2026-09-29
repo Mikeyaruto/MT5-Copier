@@ -55,7 +55,8 @@ class Dispatcher:
             )
 
     def _event_id(self, event: Dict) -> str:
-        return f"{event.get('source')}:{event.get('source_trade_id')}:{event.get('event')}"
+        return str(event.get("event_id") or
+                   f"{event['source']}:{event['source_trade_id']}:{event['event']}:{event.get('timestamp')}")
 
     def _is_processed(self, event_id: str) -> bool:
         cursor = self.db.execute(
@@ -75,11 +76,21 @@ class Dispatcher:
             return None
         return self.symbol_map.get(symbol, symbol)
 
-    def dispatch(self, event: Dict) -> None:
+    def dispatch(self, event: Dict) -> bool:
+        if event.get("event") not in {"OPEN", "CLOSE"}:
+            raise ValueError("Unsupported trade event")
+        if not event.get("source") or not event.get("source_trade_id"):
+            raise ValueError("Trade source and source_trade_id are required")
+        if event["event"] == "OPEN":
+            if event.get("side") not in {"BUY", "SELL"} or not event.get("symbol"):
+                raise ValueError("OPEN requires a symbol and BUY/SELL side")
+            lots = event.get("lots")
+            if isinstance(lots, bool) or not isinstance(lots, (int, float)) or not 0 < lots <= 100:
+                raise ValueError("OPEN lots must be between 0 and 100")
         event_id = self._event_id(event)
         if self._is_processed(event_id):
             logging.info("Duplicate event ignored: %s", event_id)
-            return
+            return True
 
         command = {
             "command_id": str(uuid.uuid4()),
@@ -94,7 +105,8 @@ class Dispatcher:
             "timestamp": event.get("timestamp"),
         }
 
-        payload = json.dumps(command, ensure_ascii=False)
+        # ASCII JSON survives the EA's explicit UTF-8 text-file reading mode.
+        payload = json.dumps(command, ensure_ascii=True)
         for attempt in range(1, self.max_write_retries + 1):
             try:
                 filename = f"{int(time.time() * 1000)}_{uuid.uuid4().hex}.json"
@@ -104,9 +116,10 @@ class Dispatcher:
                 tmp_path.replace(final_path)
                 self._mark_processed(event_id)
                 logging.info("Dispatched command %s to %s", command["command_id"], final_path)
-                return
+                return True
             except OSError as exc:
                 logging.warning("Failed to write command (attempt %s/%s): %s", attempt, self.max_write_retries, exc)
                 time.sleep(self.retry_backoff_seconds)
 
         logging.error("Failed to dispatch event after retries: %s", event_id)
+        return False
