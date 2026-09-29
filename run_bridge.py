@@ -56,9 +56,20 @@ def main() -> int:
     logging.info("Bridge started. Poll interval: %s seconds", poll_interval)
 
     while running:
-        events = feed.poll()
-        for event in events:
-            dispatcher.dispatch(event)
+        try:
+            events = feed.poll()
+            for event in events:
+                if dispatcher.dispatch(event):
+                    feed.ack()
+                else:
+                    logging.error("Dispatch failed; source event remains unacknowledged")
+                    feed.nack()
+        except (ValueError, RuntimeError):
+            logging.exception("Invalid feed event or cursor; fix the source before restarting")
+            return 1
+        except OSError:
+            feed.nack()
+            logging.exception("Temporary file error; current event will be retried")
         time.sleep(poll_interval)
 
     logging.info("Bridge stopped.")

@@ -5,8 +5,8 @@
 input string QueueFolder = "ea_queue"; // Relative to MQL5/Files
 input int PollIntervalSeconds = 1;
 input int MaxSlippage = 20;
-input bool UseHttp = false;
-input string HttpEndpoint = "http://127.0.0.1:5000/mt5";
+input double MaxLots = 1.0;
+input bool EnableExecution = false; // Explicitly enable on an MT5 demo account first.
 
 struct TradeMapping
 {
@@ -16,13 +16,33 @@ struct TradeMapping
 };
 
 TradeMapping mappings[];
+bool trading_halted = false;
 string mappings_file = "TradeExecutorEA\\mapping.csv";
 string log_file = "logs\\TradeExecutorEA.log";
 
 int OnInit()
 {
+   if(!EnableExecution)
+   {
+      Print("EnableExecution is false. No queue files or trades will be processed.");
+      return(INIT_FAILED);
+   }
+   if((ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE) != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
+   {
+      Print("This copier requires a hedging account for independent source positions.");
+      return(INIT_FAILED);
+   }
+   if(PollIntervalSeconds < 1 || MaxLots <= 0.0)
+   {
+      Print("Invalid polling interval or MaxLots.");
+      return(INIT_FAILED);
+   }
    EnsureFolders();
-   LoadMappings();
+   if(!LoadMappings() || !SaveMappings())
+   {
+      Print("Mapping file unavailable or corrupt. No trades will be processed.");
+      return(INIT_FAILED);
+   }
    EventSetTimer(PollIntervalSeconds);
    Log("TradeExecutorEA initialized.");
    return(INIT_SUCCEEDED);
@@ -31,17 +51,13 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-   SaveMappings();
    Log("TradeExecutorEA deinitialized.");
 }
 
 void OnTimer()
 {
-   if(UseHttp)
-   {
-      Log("HTTP mode enabled, but not implemented in this build. Using file queue only.");
+   if(trading_halted)
       return;
-   }
    ProcessFileQueue();
 }
 
@@ -57,7 +73,8 @@ void EnsureFolders()
 
 void Log(string message)
 {
-   int handle = FileOpen(log_file, FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE);
+   Print(message);
+   int handle = FileOpen(log_file, FILE_READ|FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_SHARE_READ, 0, CP_UTF8);
    if(handle == INVALID_HANDLE)
       return;
    FileSeek(handle, 0, SEEK_END);
@@ -77,7 +94,7 @@ int FindMapping(string source_id)
    return -1;
 }
 
-void AddMapping(string source_id, long ticket, string symbol)
+bool AddMapping(string source_id, long ticket, string symbol)
 {
    TradeMapping map;
    map.source_id = source_id;
@@ -86,28 +103,40 @@ void AddMapping(string source_id, long ticket, string symbol)
    int size = ArraySize(mappings);
    ArrayResize(mappings, size + 1);
    mappings[size] = map;
-   SaveMappings();
+   if(!SaveMappings())
+   {
+      trading_halted = true;
+      Log("FATAL: mapping not saved after OPEN. Manual reconciliation required.");
+      return false;
+   }
+   return true;
 }
 
-void RemoveMapping(string source_id)
+bool RemoveMapping(string source_id)
 {
    int index = FindMapping(source_id);
    if(index < 0)
-      return;
+      return false;
    int size = ArraySize(mappings);
    for(int i = index; i < size - 1; i++)
       mappings[i] = mappings[i + 1];
    ArrayResize(mappings, size - 1);
-   SaveMappings();
+   if(!SaveMappings())
+   {
+      trading_halted = true;
+      Log("FATAL: mapping not saved after CLOSE. Manual reconciliation required.");
+      return false;
+   }
+   return true;
 }
 
-void LoadMappings()
+bool LoadMappings()
 {
    if(!FileIsExist(mappings_file))
-      return;
-   int handle = FileOpen(mappings_file, FILE_READ|FILE_TXT);
+      return true;
+   int handle = FileOpen(mappings_file, FILE_READ|FILE_TXT|FILE_ANSI, 0, CP_UTF8);
    if(handle == INVALID_HANDLE)
-      return;
+      return false;
    while(!FileIsEnding(handle))
    {
       string line = FileReadString(handle);
@@ -115,25 +144,29 @@ void LoadMappings()
          continue;
       string parts[];
       int count = StringSplit(line, ',', parts);
-      if(count >= 2)
+      if(count < 3 || parts[0] == "" || StringToInteger(parts[1]) <= 0)
       {
-         TradeMapping map;
-         map.source_id = parts[0];
-         map.ticket = (long)StringToInteger(parts[1]);
-         map.symbol = (count >= 3 ? parts[2] : "");
-         int size = ArraySize(mappings);
-         ArrayResize(mappings, size + 1);
-         mappings[size] = map;
+         FileClose(handle);
+         return false;
       }
+      TradeMapping map;
+      map.source_id = parts[0];
+      map.ticket = (long)StringToInteger(parts[1]);
+      map.symbol = parts[2];
+      int size = ArraySize(mappings);
+      ArrayResize(mappings, size + 1);
+      mappings[size] = map;
    }
    FileClose(handle);
+   return true;
 }
 
-void SaveMappings()
+bool SaveMappings()
 {
-   int handle = FileOpen(mappings_file, FILE_WRITE|FILE_TXT);
+   string temp_path = mappings_file + ".tmp";
+   int handle = FileOpen(temp_path, FILE_WRITE|FILE_TXT|FILE_ANSI, 0, CP_UTF8);
    if(handle == INVALID_HANDLE)
-      return;
+      return false;
    int total = ArraySize(mappings);
    for(int i = 0; i < total; i++)
    {
@@ -141,6 +174,7 @@ void SaveMappings()
       FileWrite(handle, line);
    }
    FileClose(handle);
+   return FileMove(temp_path, 0, mappings_file, FILE_REWRITE);
 }
 
 string JsonGetString(string json, string key)
@@ -218,10 +252,7 @@ bool ProcessFileQueue()
 {
    string search_path = QueueFolder + "\\inbox\\*.json";
    string filename = "";
-   int attributes = 0;
-   long size = 0;
-   datetime modified = 0;
-   long handle = FileFindFirst(search_path, filename, attributes, size, modified);
+   long handle = FileFindFirst(search_path, filename);
    if(handle == INVALID_HANDLE)
       return false;
 
@@ -232,18 +263,23 @@ bool ProcessFileQueue()
       string filepath = QueueFolder + "\\inbox\\" + filename;
       bool success = ProcessCommandFile(filepath);
       string target = QueueFolder + (success ? "\\processed\\" : "\\failed\\") + filename;
-      if(!FileMove(filepath, target))
+      if(!FileMove(filepath, 0, target, 0))
       {
          Log("Failed to move file: " + filepath + " -> " + target);
+         trading_halted = true;
       }
-   } while(FileFindNext(handle, filename, attributes, size, modified));
+      if(!success)
+         trading_halted = true;
+      if(trading_halted)
+         break;
+   } while(FileFindNext(handle, filename));
    FileFindClose(handle);
    return true;
 }
 
 bool ProcessCommandFile(string filepath)
 {
-   int handle = FileOpen(filepath, FILE_READ|FILE_TXT);
+   int handle = FileOpen(filepath, FILE_READ|FILE_TXT|FILE_ANSI, 0, CP_UTF8);
    if(handle == INVALID_HANDLE)
    {
       Log("Failed to open command file: " + filepath);
@@ -277,7 +313,7 @@ bool ProcessCommandFile(string filepath)
 
 bool HandleOpen(string source_id, string symbol, string side, double lots, double sl, double tp)
 {
-   if(source_id == "" || symbol == "" || lots <= 0)
+   if(source_id == "" || symbol == "" || (side != "BUY" && side != "SELL") || lots <= 0 || lots > MaxLots)
    {
       Log("Invalid OPEN command: missing fields.");
       return false;
@@ -288,6 +324,20 @@ bool HandleOpen(string source_id, string symbol, string side, double lots, doubl
       return true;
    }
 
+   if(!SymbolSelect(symbol, true))
+   {
+      Log("Unknown broker symbol: " + symbol);
+      return false;
+   }
+   double minimum = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double maximum = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   if(lots < minimum || lots > maximum || step <= 0.0 ||
+      MathAbs(lots / step - MathRound(lots / step)) > 0.000001)
+   {
+      Log("OPEN volume fails broker minimum, maximum or step: " + DoubleToString(lots, 4));
+      return false;
+   }
    ENUM_ORDER_TYPE order_type = (side == "SELL") ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
    double price = (order_type == ORDER_TYPE_BUY) ? SymbolInfoDouble(symbol, SYMBOL_ASK) : SymbolInfoDouble(symbol, SYMBOL_BID);
 
@@ -301,43 +351,55 @@ bool HandleOpen(string source_id, string symbol, string side, double lots, doubl
    request.type = order_type;
    request.price = price;
    request.deviation = MaxSlippage;
+   request.magic = 860197;
+   long filling = SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
+   if((filling & SYMBOL_FILLING_FOK) != 0)
+      request.type_filling = ORDER_FILLING_FOK;
+   else if((filling & SYMBOL_FILLING_IOC) != 0)
+      request.type_filling = ORDER_FILLING_IOC;
+   else
+   {
+      Log("No supported FOK/IOC filling mode for " + symbol);
+      return false;
+   }
    if(sl > 0.0)
       request.sl = sl;
    if(tp > 0.0)
       request.tp = tp;
 
-   bool sent = false;
-   for(int attempt = 0; attempt < 3; attempt++)
-   {
-      RefreshRates();
-      if(OrderSend(request, result))
-      {
-         sent = true;
-         break;
-      }
-      Sleep(500);
-   }
+   bool sent = OrderSend(request, result);
 
    if(!sent || result.retcode != TRADE_RETCODE_DONE)
    {
       Log("OPEN failed: retcode=" + IntegerToString(result.retcode));
+      if(result.deal > 0 || result.retcode == TRADE_RETCODE_DONE_PARTIAL)
+         trading_halted = true;
       return false;
    }
 
-   long position_ticket = result.position;
-   if(position_ticket <= 0)
+   long position_id = 0;
+   if(result.deal > 0 && HistoryDealSelect(result.deal))
+      position_id = HistoryDealGetInteger(result.deal, DEAL_POSITION_ID);
+   long position_ticket = 0;
+   for(int i = 0; i < PositionsTotal(); i++)
    {
-      if(PositionSelect(symbol))
-         position_ticket = PositionGetInteger(POSITION_TICKET);
+      ulong candidate_ticket = PositionGetTicket(i);
+      if(candidate_ticket > 0 && PositionGetInteger(POSITION_IDENTIFIER) == position_id && position_id > 0)
+      {
+         position_ticket = (long)candidate_ticket;
+         break;
+      }
    }
 
    if(position_ticket <= 0)
    {
       Log("OPEN succeeded but position ticket not found for source: " + source_id);
+      trading_halted = true;
       return false;
    }
 
-   AddMapping(source_id, position_ticket, symbol);
+   if(!AddMapping(source_id, position_ticket, symbol))
+      return false;
    Log("OPEN executed. Source=" + source_id + " Ticket=" + (string)position_ticket);
    return true;
 }
@@ -347,15 +409,14 @@ bool HandleClose(string source_id)
    int index = FindMapping(source_id);
    if(index < 0)
    {
-      Log("CLOSE ignored. No mapping for: " + source_id);
-      return true;
+      Log("CLOSE failed. No mapping for: " + source_id);
+      return false;
    }
 
    long ticket = mappings[index].ticket;
    if(!PositionSelectByTicket(ticket))
    {
       Log("Position not found for ticket: " + (string)ticket);
-      RemoveMapping(source_id);
       return false;
    }
 
@@ -376,26 +437,30 @@ bool HandleClose(string source_id)
    request.type = close_type;
    request.price = price;
    request.deviation = MaxSlippage;
-
-   bool sent = false;
-   for(int attempt = 0; attempt < 3; attempt++)
+   request.magic = 860197;
+   long filling = SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
+   if((filling & SYMBOL_FILLING_FOK) != 0)
+      request.type_filling = ORDER_FILLING_FOK;
+   else if((filling & SYMBOL_FILLING_IOC) != 0)
+      request.type_filling = ORDER_FILLING_IOC;
+   else
    {
-      RefreshRates();
-      if(OrderSend(request, result))
-      {
-         sent = true;
-         break;
-      }
-      Sleep(500);
+      Log("No supported FOK/IOC filling mode for CLOSE: " + symbol);
+      return false;
    }
+
+   bool sent = OrderSend(request, result);
 
    if(!sent || result.retcode != TRADE_RETCODE_DONE)
    {
       Log("CLOSE failed: retcode=" + IntegerToString(result.retcode));
+      if(result.deal > 0 || result.retcode == TRADE_RETCODE_DONE_PARTIAL)
+         trading_halted = true;
       return false;
    }
 
-   RemoveMapping(source_id);
+   if(!RemoveMapping(source_id))
+      return false;
    Log("CLOSE executed. Source=" + source_id + " Ticket=" + (string)ticket);
    return true;
 }

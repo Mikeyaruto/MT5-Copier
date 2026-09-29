@@ -4,7 +4,7 @@ bridge:
   state_db_path: bridge/state/bridge.db
   feed:
     type: jsonl_file_feed
-    jsonl_path: bridge/events.jsonl
+    jsonl_path: "C:/bridge/events.jsonl"
   dispatcher:
     queue_base_path: "C:/MT5/Terminal/MQL5/Files/ea_queue"
     inbox_subdir: inbox
